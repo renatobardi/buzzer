@@ -22,10 +22,10 @@ check() { # name, expected_status, command...
 }
 
 echo "validate_relay_url"
-check "accepts ws://"                0 validate_relay_url "ws://10.173.117.32:3730"
+check "accepts ws://"                0 validate_relay_url "ws://10.0.0.1:3000"
 check "accepts wss://"               0 validate_relay_url "wss://buzz.example.org"
-check "rejects http://"              1 validate_relay_url "http://10.173.117.32:3730"
-check "rejects bare host"            1 validate_relay_url "10.173.117.32:3730"
+check "rejects http://"              1 validate_relay_url "http://10.0.0.1:3000"
+check "rejects bare host"            1 validate_relay_url "10.0.0.1:3000"
 check "rejects empty"                1 validate_relay_url ""
 
 echo "require_env"
