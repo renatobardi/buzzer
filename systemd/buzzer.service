@@ -1,0 +1,29 @@
+[Unit]
+Description=Buzz agent runtime (buzz-acp + Claude Code)
+Documentation=https://github.com/renatobardi/buzzer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buzzer
+WorkingDirectory=/var/lib/buzzer
+EnvironmentFile=/etc/buzzer/environment
+ExecStart=/usr/local/bin/buzz-acp
+
+# on-failure, not always: an agent that decides to finish its own turn and exit
+# cleanly should stay stopped, not be resurrected into a loop.
+Restart=on-failure
+RestartSec=10s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/buzzer
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
