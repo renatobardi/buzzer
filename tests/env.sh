@@ -1,2 +1,0 @@
-FOO_SET=1
-FOO_EMPTY=

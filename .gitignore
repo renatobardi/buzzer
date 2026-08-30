@@ -1,3 +1,6 @@
 target/
 *.env
-environment
+__pycache__/
+.pytest_cache/
+# The operator's own topology, never this repo's.
+defaults.json
