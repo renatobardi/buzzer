@@ -175,6 +175,7 @@ def build_env(agent, config):
     Order, weakest to strongest: user env_vars, then the desktop-resolved
     policy_env, then identity. Identity is last because nothing may override it.
     """
+    slug = validate_slug(config.get("slug") or "")
     nsec = agent.get("private_key_nsec") or ""
     relay_url = agent.get("relay_url") or ""
     # I1: refuse rather than launch identityless.
@@ -215,7 +216,7 @@ def build_env(agent, config):
     if "BUZZ_ACP_SYSTEM_PROMPT" in env:
         del env["BUZZ_ACP_SYSTEM_PROMPT"]
     if system_prompt_of(agent):
-        env["BUZZ_ACP_SYSTEM_PROMPT_FILE"] = prompt_path(config["slug"])
+        env["BUZZ_ACP_SYSTEM_PROMPT_FILE"] = prompt_path(slug)
 
     env["BUZZ_ACP_AGENT_COMMAND"] = resolve_harness(agent)
     args = launch.get("args") or agent.get("agent_args") or []
@@ -275,8 +276,6 @@ def handle(request):
             return deploy(request), 0
         except DeployRefused as error:
             return {"ok": False, "error": str(error)}, 0
-        except subprocess.CalledProcessError as error:
-            return {"ok": False, "error": "remote command failed: %s" % error.cmd[0]}, 0
     return {"ok": False, "error": "unsupported op: %r" % (op,)}, 0
 
 
@@ -330,11 +329,11 @@ class Remote(object):
 
     def _ssh(self, script, stdin=None):
         # Absolute path: under launchd the PATH may not contain ssh.
+        # -n when nothing is piped, so the terminal's stdin stays out of the
+        # remote command; -T otherwise, because the payload goes over stdin and
+        # a pty would corrupt it.
         argv = ["/usr/bin/ssh", "-n" if stdin is None else "-T", self.host,
                 "lxc exec %s -- bash -lc %s" % (self.container, shlex.quote(script))]
-        if stdin is not None:
-            argv.remove("-T")
-            argv.insert(1, "-T")
         return subprocess.run(
             argv, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True, check=False,
