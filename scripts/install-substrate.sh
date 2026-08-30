@@ -28,9 +28,9 @@ UNIT_SRC=${UNIT_SRC:-$(cd "$(dirname "$0")/.." && pwd)/systemd/buzz-agent@.servi
 
 say() { printf '==> %s\n' "$*"; }
 
-[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+[[ "$(id -u)" -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "this needs systemd" >&2; exit 1; }
-[ -f "$UNIT_SRC" ] || { echo "unit template not found at $UNIT_SRC" >&2; exit 1; }
+[[ -f "$UNIT_SRC" ]] || { echo "unit template not found at $UNIT_SRC" >&2; exit 1; }
 
 say "user: $AGENT_USER"
 # No login shell and no password: this account exists to own files and run a
@@ -60,7 +60,7 @@ verify_out=$(systemd-analyze verify buzz-agent@.service 2>&1 || true)
 unit_problems=$(printf '%s\n' "$verify_out" \
   | grep -v "is not executable" \
   | grep -v "^$" || true)
-if [ -n "$unit_problems" ]; then
+if [[ -n "$unit_problems" ]]; then
   echo "    the unit does not verify:" >&2
   printf '    %s\n' "$unit_problems" >&2
   exit 1
@@ -74,7 +74,7 @@ fi
 
 missing=""
 for binary in buzz-acp buzz-agent; do
-  [ -x "$BIN_DIR/$binary" ] || missing="$missing $binary"
+  [[ -x "$BIN_DIR/$binary" ]] || missing="$missing $binary"
 done
 
 cat <<MSG
@@ -82,7 +82,7 @@ cat <<MSG
 ==> substrate ready. It runs no persona yet, by design.
 MSG
 
-if [ -n "$missing" ]; then
+if [[ -n "$missing" ]]; then
   cat <<MSG
     Still missing in $BIN_DIR:$missing
     Build them with scripts/build-binaries.sh, then deploy a persona from
