@@ -51,8 +51,20 @@ install -m 0644 "$UNIT_SRC" /etc/systemd/system/buzz-agent@.service
 systemctl daemon-reload
 
 say "verify"
-systemd-analyze verify buzz-agent@.service \
-  || { echo "    the unit does not verify" >&2; exit 1; }
+# systemd-analyze verify also resolves ExecStart, so it fails while the
+# binaries are absent. That is a legitimate state: the substrate is meant to be
+# installable before, or independently of, the build. So the unit's own
+# problems are what gate here — an unknown key, a syntax error — and a missing
+# binary is reported at the end instead.
+verify_out=$(systemd-analyze verify buzz-agent@.service 2>&1 || true)
+unit_problems=$(printf '%s\n' "$verify_out" \
+  | grep -v "is not executable" \
+  | grep -v "^$" || true)
+if [ -n "$unit_problems" ]; then
+  echo "    the unit does not verify:" >&2
+  printf '    %s\n' "$unit_problems" >&2
+  exit 1
+fi
 # [L1.2] Presence is the only status signal a remote agent has. A stray
 # BUZZ_ACP_NO_PRESENCE anywhere would blind it silently.
 if grep -rqs BUZZ_ACP_NO_PRESENCE "$ETC_DIR/agents"; then
