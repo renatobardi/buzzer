@@ -212,7 +212,8 @@ def build_env(agent, config):
     """The agent's environment, in the precedence the contract requires.
 
     Order, weakest to strongest: user env_vars, then the desktop-resolved
-    policy_env, then identity. Identity is last because nothing may override it.
+    launch.env (per-runtime model/provider injection), then launch.policy_env,
+    then identity. Identity is last because nothing may override it.
     """
     given = (config.get("slug") or "").strip()
     slug = validate_slug(given) if given else slug_from_name(agent.get("name"))
@@ -241,6 +242,16 @@ def build_env(agent, config):
     # keys are dropped here, not overwritten later, so a smuggled key cannot
     # survive into the file at all.
     for key, value in (agent.get("env_vars") or {}).items():
+        if key in RESERVED_KEYS:
+            continue
+        env[key] = value
+
+    # The descriptor's layered env (docs/remote-agents.md §Launch data, tier
+    # 2): per-runtime model/provider injection — BUZZ_AGENT_PROVIDER /
+    # BUZZ_AGENT_MODEL for buzz-agent — lives here, resolved by the desktop's
+    # harness descriptor. Without this, the operator's provider/model choice
+    # in the UI never reaches the deployed unit at all.
+    for key, value in (launch.get("env") or {}).items():
         if key in RESERVED_KEYS:
             continue
         env[key] = value
@@ -364,7 +375,10 @@ def deploy(request):
     remote.require_binaries(env["BUZZ_ACP_AGENT_COMMAND"])
 
     # I4: a live unit with the same identity is a strict no-op — zero mutation.
-    if remote.is_live(slug) and remote.env_matches(slug, rendered):
+    # Env and prompt are independent pieces of deployed state (a save can
+    # touch either one alone), so both must match before skipping the write.
+    if remote.is_live(slug) and remote.env_matches(slug, rendered) \
+            and remote.prompt_matches(slug, prompt):
         return {"ok": True, "agent_id": agent_id(slug, container)}
 
     remote.write_files(slug, rendered, prompt)
@@ -424,6 +438,19 @@ class Remote(object):
         result = self._run("cat %s 2>/dev/null" % shlex.quote(env_path(slug)))
         current = result.stdout or ""
         return MANAGEMENT_MARKER in current and current == rendered
+
+    def prompt_matches(self, slug, prompt):
+        """True when the deployed prompt already matches, or none is wanted.
+
+        A falsy `prompt` means this deploy has no prompt to check — the env
+        diff (BUZZ_ACP_SYSTEM_PROMPT_FILE appearing or disappearing) already
+        forces a full write in that case, so trivially matching here never
+        masks a change.
+        """
+        if not prompt:
+            return True
+        result = self._run("cat %s 2>/dev/null" % shlex.quote(prompt_path(slug)))
+        return (result.stdout or "") == prompt
 
     def write_files(self, slug, rendered, prompt):
         existing = self._run("cat %s 2>/dev/null" % shlex.quote(env_path(slug)))
