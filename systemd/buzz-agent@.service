@@ -1,0 +1,49 @@
+[Unit]
+Description=Buzz agent persona %i
+Documentation=https://github.com/renatobardi/buzzer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buzz
+Group=buzz
+EnvironmentFile=/etc/buzz/agents/%i.env
+WorkingDirectory=/srv/agents/%i
+
+# [L1.3] The substrate's termination signal must reach the harness process.
+# No wrapper, no shell: a wrapper that swallows the signal "conforms to
+# nothing", and the agent loses its graceful shutdown.
+ExecStart=/usr/local/bin/buzz-acp
+
+# [L1.5] An intentional clean exit — the owner's !shutdown, an inactivity reap —
+# must never be restarted. Restart=always and its equivalents are explicitly
+# non-conforming at this layer.
+Restart=on-failure
+RestartSec=10s
+
+# The agent is an HTTP loop. A network outage must not turn into a restart
+# storm that burns the provider's rate limit.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Per-persona caps: one persona stuck in a tool-calling loop must not starve
+# the others sharing this container. Override per instance with a drop-in at
+# /etc/systemd/system/buzz-agent@<slug>.service.d/.
+MemoryMax=1500M
+CPUQuota=50%
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# The workspace is the only thing a persona may write. Checkouts and scratch
+# files live here and are mortal by design: what must survive lives on the relay.
+ReadWritePaths=/srv/agents/%i
+
+[Install]
+WantedBy=multi-user.target

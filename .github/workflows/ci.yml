@@ -5,5 +5,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -x install.sh lib/buzzer.sh tests/run.sh
-      - run: ./tests/run.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: pip install pytest
+      # 3.9 on purpose: the provider runs under macOS's /usr/bin/python3, and a
+      # 3.10-only construct would only show up on a user's machine.
+      - run: python -m pytest tests/ -q
+      - run: shellcheck scripts/*.sh
