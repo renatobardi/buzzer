@@ -334,10 +334,11 @@ class TestMissingSlug:
     generic "provider failed" instead of the reason.
     """
 
-    def test_absent_slug_is_refused_not_a_keyerror(self):
+    def test_absent_slug_and_unusable_name_is_refused_not_a_keyerror(self):
         config = {"host": "h", "container": "c"}
+        agent = dict(payload()["agent"], name="!!!")
         with pytest.raises(provider.DeployRefused):
-            provider.build_env(payload()["agent"], config)
+            provider.build_env(agent, config)
 
     def test_unsafe_slug_is_refused_before_a_path_is_built(self):
         config = dict(payload()["provider_config"], slug="../../etc/passwd")
@@ -389,3 +390,128 @@ class TestUnitFile:
 
     def test_presence_is_not_suppressed(self):
         assert "BUZZ_ACP_NO_PRESENCE" not in self.UNIT.read_text()
+
+
+class TestDerivedSlug:
+    """The desktop already sends the agent's name; asking for it again was a
+    design mistake that cost a failed deploy.
+
+    Worse, the desktop does not re-expose provider_config when editing an
+    existing agent, so a missing slug could only be fixed by deleting the agent
+    and recreating it. Deriving one removes the whole class of failure; the
+    field stays available for when a different instance name is wanted.
+    """
+
+    @pytest.mark.parametrize("name,expected", [
+        ("Jack (Presenter)", "jack-presenter"),
+        ("Presenter", "presenter"),
+        ("Vigia  de   Infra", "vigia-de-infra"),
+        ("  Trailing and leading  ", "trailing-and-leading"),
+        ("Añó Válido", "ano-valido"),
+        ("Ação de Vendas", "acao-de-vendas"),
+        ("2Fast", "2fast"),
+        ("---weird---", "weird"),
+    ])
+    def test_derives_a_usable_slug_from_the_name(self, name, expected):
+        assert provider.slug_from_name(name) == expected
+
+    def test_derived_slug_is_always_valid(self):
+        for name in ["Jack (Presenter)", "x" * 200, "9 lives", "Ção"]:
+            assert provider.validate_slug(provider.slug_from_name(name))
+
+    def test_a_name_with_nothing_usable_is_refused(self):
+        # Better an explicit refusal than a path built from an empty string.
+        for name in ["", "()", "   ", "!!!"]:
+            with pytest.raises(provider.DeployRefused):
+                provider.slug_from_name(name)
+
+    def test_an_explicit_slug_still_wins(self):
+        config = dict(payload()["provider_config"], slug="chosen")
+        env = provider.build_env(payload()["agent"], config)
+        assert env["BUZZ_ACP_SYSTEM_PROMPT_FILE"].endswith("/chosen.md")
+
+    def test_an_absent_slug_falls_back_to_the_name(self):
+        config = {"host": "h", "container": "c"}
+        agent = dict(payload()["agent"], name="Jack (Presenter)")
+        env = provider.build_env(agent, config)
+        assert env["BUZZ_ACP_SYSTEM_PROMPT_FILE"].endswith("/jack-presenter.md")
+
+    def test_slug_is_no_longer_a_required_field(self):
+        assert "slug" not in provider.info()["config_schema"]["required"]
+
+    def test_an_invalid_explicit_slug_is_still_refused(self):
+        # Deriving a fallback must not paper over a value the user did type.
+        config = dict(payload()["provider_config"], slug="../etc/passwd")
+        with pytest.raises(provider.DeployRefused):
+            provider.build_env(payload()["agent"], config)
+
+
+class TestNormativeMapping:
+    """The payload-to-environment mapping is normative, not a matter of taste.
+
+    Everything asserted here comes from the table in `docs/remote-agents.md`
+    §K8s Entrypoint, which the spec introduces with "two conforming
+    implementations must produce interchangeable pods".
+    """
+
+    def test_the_dev_mcp_server_is_always_provided(self):
+        # Without it a persona can only talk: buzz-agent has no built-in tools
+        # and reaches everything through MCP. The binding sets this itself
+        # rather than waiting for the desktop to ask.
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert env["BUZZ_ACP_MCP_COMMAND"] == "/usr/local/bin/buzz-dev-mcp"
+
+    def test_an_explicit_mcp_command_is_respected(self):
+        agent = payload()["agent"]
+        agent["env_vars"] = dict(agent["env_vars"],
+                                 BUZZ_ACP_MCP_COMMAND="/usr/local/bin/other-mcp")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_MCP_COMMAND"] == "/usr/local/bin/other-mcp"
+
+    def test_respond_to_reaches_the_harness(self):
+        agent = dict(payload()["agent"], respond_to="owner-only")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_RESPOND_TO"] == "owner-only"
+
+    def test_respond_to_allowlist_is_comma_joined(self):
+        agent = dict(payload()["agent"], respond_to="allowlist",
+                     respond_to_allowlist=["a" * 64, "b" * 64])
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_RESPOND_TO_ALLOWLIST"] == "a" * 64 + "," + "b" * 64
+
+    def test_an_empty_allowlist_is_omitted(self):
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert "BUZZ_ACP_RESPOND_TO_ALLOWLIST" not in env
+
+    def test_owner_pubkey_is_mapped_when_there_is_no_auth_tag(self):
+        # The spec: with auth_tag null, launch.owner_pubkey ->
+        # BUZZ_ACP_AGENT_OWNER is REQUIRED. Refusing to deploy was not enough —
+        # the agent needs the owner to resolve at all.
+        agent = dict(payload()["agent"], auth_tag="")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_AGENT_OWNER"] == "e" * 64
+        assert "BUZZ_AUTH_TAG" not in env
+
+    def test_auth_tag_alone_needs_no_owner_var(self):
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert env["BUZZ_AUTH_TAG"]
+        assert "BUZZ_ACP_AGENT_OWNER" not in env
+
+    def test_provider_and_model_are_never_mapped_by_us(self):
+        # "A provider MUST NOT map `provider` to any env var itself — that
+        # mapping is per-runtime and lives in the desktop's resolver."
+        agent = dict(payload()["agent"], provider="openrouter", model="some/model")
+        agent["env_vars"] = {}
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert "BUZZ_AGENT_PROVIDER" not in env
+        assert "OPENROUTER_MODEL" not in env
+
+    def test_the_user_can_still_supply_them_through_env_vars(self):
+        # Which is the workaround while the desktop does not resolve them for
+        # the buzz-agent + OpenRouter combination.
+        agent = payload()["agent"]
+        agent["env_vars"] = {"BUZZ_AGENT_PROVIDER": "openrouter",
+                             "OPENROUTER_MODEL": "z-ai/glm-5.3"}
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"
+        assert env["OPENROUTER_MODEL"] == "z-ai/glm-5.3"

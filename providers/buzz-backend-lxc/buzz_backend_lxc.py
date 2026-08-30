@@ -22,6 +22,7 @@ import re
 import shlex
 import subprocess
 import sys
+import unicodedata
 
 PROTOCOL_VERSION = 1
 VERSION = "1.0.0"
@@ -30,6 +31,12 @@ BIN_DIR = "/usr/local/bin"
 ENV_DIR = "/etc/buzz/agents"
 PROMPT_DIR = "/etc/buzz/prompts"
 WORKSPACE_DIR = "/srv/agents"
+
+# buzz-agent has no built-in tools: everything it does runs through MCP over
+# stdio. Providing the dev-MCP server is the binding's job, not the desktop's
+# (docs/remote-agents.md §K8s Entrypoint, "the dev-MCP requirement") — without
+# it a persona can only talk.
+DEV_MCP = BIN_DIR + "/buzz-dev-mcp"
 
 # The harnesses the container actually has, from build-buzz-binaries.sh. A
 # deploy naming anything else is refused here rather than left to fail at exec
@@ -101,7 +108,7 @@ def info(defaults_path=None):
         "description": "Runs agents as systemd units in an LXC container",
         "config_schema": {
             "type": "object",
-            "required": ["host", "container", "slug"],
+            "required": ["host", "container"],
             "properties": {
                 "channels": {
                     "type": "string",
@@ -127,11 +134,38 @@ def info(defaults_path=None):
                     "type": "string",
                     "title": "Instance slug",
                     "description": "systemd instance name: buzz-agent@<slug>. "
-                                   "Lowercase, no spaces.",
+                                   "Leave blank to derive it from the agent's "
+                                   "name. Lowercase, no spaces.",
                 },
             },
         },
     }
+
+
+def slug_from_name(name):
+    """A systemd instance name derived from the agent's display name.
+
+    The desktop already sends the name, and it does not re-expose
+    provider_config when an agent is edited — so a slug the operator forgot at
+    creation could only be fixed by deleting the agent. Deriving one removes
+    that trap.
+    """
+    # Strip accents to their base letter rather than to a separator: personas
+    # get named in the operator's own language, and "Ação" deserves "acao",
+    # not "a-o".
+    decomposed = unicodedata.normalize("NFKD", (name or "").lower())
+    folded = "".join(c for c in decomposed if not unicodedata.combining(c))
+    slug = "".join(c if ("a" <= c <= "z" or "0" <= c <= "9") else "-"
+                   for c in folded)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug.strip("-")[:64].rstrip("-")
+    if not slug:
+        raise DeployRefused(
+            "cannot derive an instance name from %r — set one explicitly in "
+            "the provider's Instance slug field" % (name,)
+        )
+    return validate_slug(slug)
 
 
 def validate_slug(slug):
@@ -175,7 +209,8 @@ def build_env(agent, config):
     Order, weakest to strongest: user env_vars, then the desktop-resolved
     policy_env, then identity. Identity is last because nothing may override it.
     """
-    slug = validate_slug(config.get("slug") or "")
+    given = (config.get("slug") or "").strip()
+    slug = validate_slug(given) if given else slug_from_name(agent.get("name"))
     nsec = agent.get("private_key_nsec") or ""
     relay_url = agent.get("relay_url") or ""
     # I1: refuse rather than launch identityless.
@@ -194,9 +229,10 @@ def build_env(agent, config):
             "resolved, so the relay cannot authorize this agent"
         )
 
-    env = {}
+    # Weakest tier of all, so the operator can still point at another server.
+    env = {"BUZZ_ACP_MCP_COMMAND": DEV_MCP}
 
-    # Weakest tier: what the user typed into Environment variables. Reserved
+    # Then what the user typed into Environment variables. Reserved
     # keys are dropped here, not overwritten later, so a smuggled key cannot
     # survive into the file at all.
     for key, value in (agent.get("env_vars") or {}).items():
@@ -229,12 +265,25 @@ def build_env(agent, config):
     if channels:
         env["BUZZ_ACP_CHANNELS"] = channels
 
+    # The inbound author gate decides who may make this agent act on the host
+    # it runs on. It comes from the agent record, never from user env.
+    respond_to = agent.get("respond_to")
+    if respond_to:
+        env["BUZZ_ACP_RESPOND_TO"] = respond_to
+    allowlist = agent.get("respond_to_allowlist") or []
+    if allowlist:
+        env["BUZZ_ACP_RESPOND_TO_ALLOWLIST"] = ",".join(allowlist)
+
     # Strongest tier: identity, from top-level fields only.
     env["BUZZ_PRIVATE_KEY"] = nsec
     env["NOSTR_PRIVATE_KEY"] = nsec
     env["BUZZ_RELAY_URL"] = relay_url
     if auth_tag:
         env["BUZZ_AUTH_TAG"] = auth_tag
+    else:
+        # With no auth tag the owner must arrive some other way, or the agent
+        # cannot resolve who owns it. Refusing the deploy was not enough.
+        env["BUZZ_ACP_AGENT_OWNER"] = owner_pubkey
 
     return env
 
@@ -282,7 +331,8 @@ def handle(request):
 def deploy(request):
     agent = request.get("agent") or {}
     config = request.get("provider_config") or {}
-    slug = validate_slug(config.get("slug") or "")
+    given = (config.get("slug") or "").strip()
+    slug = validate_slug(given) if given else slug_from_name(agent.get("name"))
     host = config.get("host") or ""
     container = config.get("container") or ""
     if not host or not container:
