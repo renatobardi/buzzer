@@ -444,3 +444,74 @@ class TestDerivedSlug:
         config = dict(payload()["provider_config"], slug="../etc/passwd")
         with pytest.raises(provider.DeployRefused):
             provider.build_env(payload()["agent"], config)
+
+
+class TestNormativeMapping:
+    """The payload-to-environment mapping is normative, not a matter of taste.
+
+    Everything asserted here comes from the table in `docs/remote-agents.md`
+    §K8s Entrypoint, which the spec introduces with "two conforming
+    implementations must produce interchangeable pods".
+    """
+
+    def test_the_dev_mcp_server_is_always_provided(self):
+        # Without it a persona can only talk: buzz-agent has no built-in tools
+        # and reaches everything through MCP. The binding sets this itself
+        # rather than waiting for the desktop to ask.
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert env["BUZZ_ACP_MCP_COMMAND"] == "/usr/local/bin/buzz-dev-mcp"
+
+    def test_an_explicit_mcp_command_is_respected(self):
+        agent = payload()["agent"]
+        agent["env_vars"] = dict(agent["env_vars"],
+                                 BUZZ_ACP_MCP_COMMAND="/usr/local/bin/other-mcp")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_MCP_COMMAND"] == "/usr/local/bin/other-mcp"
+
+    def test_respond_to_reaches_the_harness(self):
+        agent = dict(payload()["agent"], respond_to="owner-only")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_RESPOND_TO"] == "owner-only"
+
+    def test_respond_to_allowlist_is_comma_joined(self):
+        agent = dict(payload()["agent"], respond_to="allowlist",
+                     respond_to_allowlist=["a" * 64, "b" * 64])
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_RESPOND_TO_ALLOWLIST"] == "a" * 64 + "," + "b" * 64
+
+    def test_an_empty_allowlist_is_omitted(self):
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert "BUZZ_ACP_RESPOND_TO_ALLOWLIST" not in env
+
+    def test_owner_pubkey_is_mapped_when_there_is_no_auth_tag(self):
+        # The spec: with auth_tag null, launch.owner_pubkey ->
+        # BUZZ_ACP_AGENT_OWNER is REQUIRED. Refusing to deploy was not enough —
+        # the agent needs the owner to resolve at all.
+        agent = dict(payload()["agent"], auth_tag="")
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_AGENT_OWNER"] == "e" * 64
+        assert "BUZZ_AUTH_TAG" not in env
+
+    def test_auth_tag_alone_needs_no_owner_var(self):
+        env = provider.build_env(payload()["agent"], payload()["provider_config"])
+        assert env["BUZZ_AUTH_TAG"]
+        assert "BUZZ_ACP_AGENT_OWNER" not in env
+
+    def test_provider_and_model_are_never_mapped_by_us(self):
+        # "A provider MUST NOT map `provider` to any env var itself — that
+        # mapping is per-runtime and lives in the desktop's resolver."
+        agent = dict(payload()["agent"], provider="openrouter", model="some/model")
+        agent["env_vars"] = {}
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert "BUZZ_AGENT_PROVIDER" not in env
+        assert "OPENROUTER_MODEL" not in env
+
+    def test_the_user_can_still_supply_them_through_env_vars(self):
+        # Which is the workaround while the desktop does not resolve them for
+        # the buzz-agent + OpenRouter combination.
+        agent = payload()["agent"]
+        agent["env_vars"] = {"BUZZ_AGENT_PROVIDER": "openrouter",
+                             "OPENROUTER_MODEL": "z-ai/glm-5.3"}
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"
+        assert env["OPENROUTER_MODEL"] == "z-ai/glm-5.3"
