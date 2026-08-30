@@ -4,6 +4,13 @@ Documentation=https://github.com/renatobardi/buzzer
 After=network-online.target
 Wants=network-online.target
 
+# The agent is an HTTP loop. A network outage must not turn into a restart
+# storm that burns the model provider's rate limit. These belong in [Unit]:
+# systemd ignores them in [Service] with nothing but a log line, so the
+# protection would look present and do nothing.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=buzz
@@ -21,11 +28,6 @@ ExecStart=/usr/local/bin/buzz-acp
 # non-conforming at this layer.
 Restart=on-failure
 RestartSec=10s
-
-# The agent is an HTTP loop. A network outage must not turn into a restart
-# storm that burns the provider's rate limit.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Per-persona caps: one persona stuck in a tool-calling loop must not starve
 # the others sharing this container. Override per instance with a drop-in at

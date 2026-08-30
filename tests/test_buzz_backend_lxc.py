@@ -343,3 +343,49 @@ class TestMissingSlug:
         config = dict(payload()["provider_config"], slug="../../etc/passwd")
         with pytest.raises(provider.DeployRefused):
             provider.build_env(payload()["agent"], config)
+
+
+class TestUnitFile:
+    """The unit is protocol surface, so its directives are asserted, not assumed.
+
+    systemd does not fail on a directive in the wrong section — it logs
+    "Unknown key name" and carries on, so a misplaced rate limit protects
+    nothing while looking like it does.
+    """
+
+    UNIT = REPO_ROOT / "systemd" / "buzz-agent@.service"
+
+    def sections(self):
+        out, current = {}, None
+        for line in self.UNIT.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1]
+                out[current] = []
+            elif line and not line.startswith("#") and current:
+                out[current].append(line)
+        return out
+
+    def test_start_rate_limiting_is_in_the_unit_section(self):
+        # systemd.unit(5) documents these, not systemd.service(5).
+        service = " ".join(self.sections().get("Service", []))
+        unit = " ".join(self.sections().get("Unit", []))
+        for key in ("StartLimitIntervalSec", "StartLimitBurst"):
+            assert key not in service, f"{key} is silently ignored in [Service]"
+            assert key in unit, f"{key} must be in [Unit] to take effect"
+
+    def test_a_clean_exit_is_never_restarted(self):
+        service = " ".join(self.sections()["Service"])
+        assert "Restart=on-failure" in service
+        assert "Restart=always" not in service
+
+    def test_the_harness_is_exec_directly(self):
+        # L1.3: a wrapper that swallows the termination signal conforms to
+        # nothing.
+        service = " ".join(self.sections()["Service"])
+        assert "ExecStart=/usr/local/bin/buzz-acp" in service
+        for wrapper in ("/bin/sh", "/bin/bash"):
+            assert "ExecStart=%s" % wrapper not in service
+
+    def test_presence_is_not_suppressed(self):
+        assert "BUZZ_ACP_NO_PRESENCE" not in self.UNIT.read_text()
