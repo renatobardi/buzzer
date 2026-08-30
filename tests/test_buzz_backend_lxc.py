@@ -609,3 +609,86 @@ class TestProviderPreflight:
         except provider.DeployRefused as error:
             assert "BUZZ_AGENT_PROVIDER" not in str(error)
 
+
+class FakeRemote:
+    """A `Remote` double: no ssh, just records what deploy() asked it to do.
+
+    Class attributes are the scenario knobs (set before calling `deploy`);
+    instances (one per `deploy()` call) record what happened so the test can
+    assert on it afterwards.
+    """
+
+    live = True
+    env_matches_result = False
+    prompt_matches_result = False
+    instances = []
+
+    def __init__(self, host, container):
+        self.host = host
+        self.container = container
+        self.write_files_calls = []
+        self.enable_calls = 0
+        type(self).instances.append(self)
+
+    def require_binaries(self, harness):
+        pass
+
+    def is_live(self, slug):
+        return type(self).live
+
+    def env_matches(self, slug, rendered):
+        return type(self).env_matches_result
+
+    def prompt_matches(self, slug, prompt):
+        return type(self).prompt_matches_result
+
+    def write_files(self, slug, rendered, prompt):
+        self.write_files_calls.append(prompt)
+
+    def enable(self, slug):
+        self.enable_calls += 1
+
+
+class TestPromptRefreshOnRedeploy:
+    """A save that only edits the persona's prompt must not be a no-op.
+
+    I4's env-only no-op check ("a live unit with the same identity is a
+    strict no-op") must not ALSO suppress a prompt-only change — the two are
+    independent pieces of deployed state, and the desktop's save button
+    cannot tell the provider which one changed.
+    """
+
+    def setup_method(self):
+        FakeRemote.instances = []
+        FakeRemote.live = True
+        FakeRemote.env_matches_result = False
+        FakeRemote.prompt_matches_result = False
+
+    def test_env_unchanged_but_prompt_changed_still_writes_the_prompt(self, monkeypatch):
+        monkeypatch.setattr(provider, "Remote", FakeRemote)
+        FakeRemote.env_matches_result = True
+        FakeRemote.prompt_matches_result = False
+        result = provider.deploy(payload())
+        assert result["ok"] is True
+        fake = FakeRemote.instances[-1]
+        assert fake.write_files_calls, \
+            "the prompt edit was silently dropped by the env-match no-op"
+
+    def test_true_no_op_when_env_and_prompt_both_match(self, monkeypatch):
+        monkeypatch.setattr(provider, "Remote", FakeRemote)
+        FakeRemote.env_matches_result = True
+        FakeRemote.prompt_matches_result = True
+        result = provider.deploy(payload())
+        assert result["ok"] is True
+        fake = FakeRemote.instances[-1]
+        assert fake.write_files_calls == []
+        assert fake.enable_calls == 0
+
+    def test_env_changed_writes_regardless_of_prompt(self, monkeypatch):
+        monkeypatch.setattr(provider, "Remote", FakeRemote)
+        FakeRemote.env_matches_result = False
+        FakeRemote.prompt_matches_result = True
+        result = provider.deploy(payload())
+        assert result["ok"] is True
+        fake = FakeRemote.instances[-1]
+        assert fake.write_files_calls
