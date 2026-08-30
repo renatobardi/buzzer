@@ -324,3 +324,22 @@ class TestSiteDefaults:
         schema = provider.info(defaults_path=path)["config_schema"]
         assert "api_key" not in schema["properties"]
         assert json.dumps(schema).find("sk-secret") == -1
+
+
+class TestMissingSlug:
+    """A bad slug must reach the user as a message, not as a traceback.
+
+    build_env is reachable with an unvalidated config, and an uncaught KeyError
+    exits nonzero — which makes the desktop discard stdout and show its own
+    generic "provider failed" instead of the reason.
+    """
+
+    def test_absent_slug_is_refused_not_a_keyerror(self):
+        config = {"host": "h", "container": "c"}
+        with pytest.raises(provider.DeployRefused):
+            provider.build_env(payload()["agent"], config)
+
+    def test_unsafe_slug_is_refused_before_a_path_is_built(self):
+        config = dict(payload()["provider_config"], slug="../../etc/passwd")
+        with pytest.raises(provider.DeployRefused):
+            provider.build_env(payload()["agent"], config)
