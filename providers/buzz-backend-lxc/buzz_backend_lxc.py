@@ -178,15 +178,20 @@ def validate_slug(slug):
     return slug
 
 
+def harness_name(agent):
+    """The bare name of the ACP agent the harness will spawn."""
+    launch = agent.get("launch") or {}
+    command = launch.get("command") or agent.get("agent_command") or ""
+    return command.rsplit("/", 1)[-1]
+
+
 def resolve_harness(agent):
     """The ACP agent the harness spawns, as an absolute path in the container.
 
     `launch.command` is the normative source; `agent_command` is the legacy
     field kept for builds that do not emit the launch block.
     """
-    launch = agent.get("launch") or {}
-    command = launch.get("command") or agent.get("agent_command") or ""
-    name = command.rsplit("/", 1)[-1]
+    name = harness_name(agent)
     if name not in KNOWN_HARNESSES:
         raise DeployRefused(
             "this container does not have the harness '%s'. It provides: %s. "
@@ -264,6 +269,19 @@ def build_env(agent, config):
     channels = (config.get("channels") or "").strip()
     if channels:
         env["BUZZ_ACP_CHANNELS"] = channels
+
+    # buzz-agent exits at startup without a provider, and with a lazy pool that
+    # does not happen until the first mention — so a deploy would report success
+    # and the failure would surface as silence in a channel minutes later.
+    # Checking is not mapping: the contract forbids deriving this value, not
+    # noticing it is absent.
+    if harness_name(agent) == "buzz-agent" and "BUZZ_AGENT_PROVIDER" not in env:
+        raise DeployRefused(
+            "buzz-agent needs BUZZ_AGENT_PROVIDER and it was not resolved. Add "
+            "it as an environment variable on this agent (for example "
+            "BUZZ_AGENT_PROVIDER=openrouter, with OPENROUTER_MODEL alongside "
+            "it). A provider is not allowed to infer it."
+        )
 
     # The inbound author gate decides who may make this agent act on the host
     # it runs on. It comes from the agent record, never from user env.

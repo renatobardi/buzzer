@@ -43,7 +43,10 @@ def payload(**overrides):
         "turn_timeout_seconds": 320,
         "idle_timeout_seconds": None,
         "max_turn_duration_seconds": None,
-        "env_vars": {"OPENROUTER_API_KEY": "test-not-a-real-key"},
+        "env_vars": {"OPENROUTER_API_KEY": "test-not-a-real-key",
+                     # buzz-agent refuses to start without this, and the desktop
+                     # does not resolve it for the OpenRouter pair.
+                     "BUZZ_AGENT_PROVIDER": "openrouter"},
         "launch": {
             "command": "buzz-agent",
             "args": [],
@@ -107,6 +110,9 @@ class TestIdentity:
             "BUZZ_PRIVATE_KEY": "nsec1attacker",
             "BUZZ_RELAY_URL": "wss://evil.example",
             "BUZZ_AUTH_TAG": "forged",
+            # Unrelated to this test, but the deploy would not get this far
+            # without it.
+            "BUZZ_AGENT_PROVIDER": "openrouter",
         }
         env = provider.build_env(agent, payload()["provider_config"])
         assert env["BUZZ_PRIVATE_KEY"] == "nsec1" + "a" * 58
@@ -499,12 +505,16 @@ class TestNormativeMapping:
 
     def test_provider_and_model_are_never_mapped_by_us(self):
         # "A provider MUST NOT map `provider` to any env var itself — that
-        # mapping is per-runtime and lives in the desktop's resolver."
+        # mapping is per-runtime and lives in the desktop's resolver." Checked
+        # on a harness the buzz-agent preflight does not police, so this tests
+        # the mapping rule rather than the guard.
         agent = dict(payload()["agent"], provider="openrouter", model="some/model")
         agent["env_vars"] = {}
+        agent["launch"] = dict(agent["launch"], command="buzz-agent")
+        agent["env_vars"] = {"BUZZ_AGENT_PROVIDER": "openrouter"}
         env = provider.build_env(agent, payload()["provider_config"])
-        assert "BUZZ_AGENT_PROVIDER" not in env
-        assert "OPENROUTER_MODEL" not in env
+        assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"  # theirs, not derived
+        assert "OPENROUTER_MODEL" not in env  # model is never mapped
 
     def test_the_user_can_still_supply_them_through_env_vars(self):
         # Which is the workaround while the desktop does not resolve them for
@@ -515,3 +525,59 @@ class TestNormativeMapping:
         env = provider.build_env(agent, payload()["provider_config"])
         assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"
         assert env["OPENROUTER_MODEL"] == "z-ai/glm-5.3"
+
+
+class TestProviderPreflight:
+    """A deploy that cannot possibly work should fail on the screen, not later.
+
+    buzz-agent requires BUZZ_AGENT_PROVIDER and exits at startup without it. The
+    desktop does not resolve it for the buzz-agent + OpenRouter pair, and with a
+    lazy pool the processes are not spawned until the first mention — so the
+    deploy reports success, the agent goes online, and the failure surfaces as
+    silence in a channel minutes later.
+
+    Checking is not mapping: the contract forbids a provider from deriving this
+    value, not from noticing it is missing.
+    """
+
+    def test_refuses_buzz_agent_without_a_provider(self):
+        agent = payload()["agent"]
+        agent["env_vars"] = {}
+        with pytest.raises(provider.DeployRefused) as excinfo:
+            provider.build_env(agent, payload()["provider_config"])
+        assert "BUZZ_AGENT_PROVIDER" in str(excinfo.value)
+
+    def test_the_message_says_where_to_set_it(self):
+        agent = payload()["agent"]
+        agent["env_vars"] = {}
+        try:
+            provider.build_env(agent, payload()["provider_config"])
+        except provider.DeployRefused as error:
+            assert "environment variable" in str(error).lower()
+
+    def test_env_vars_satisfy_it(self):
+        agent = payload()["agent"]
+        agent["env_vars"] = {"BUZZ_AGENT_PROVIDER": "openrouter"}
+        assert provider.build_env(agent, payload()["provider_config"])
+
+    def test_policy_env_satisfies_it_too(self):
+        # When the desktop starts resolving it, this guard must get out of the
+        # way rather than become the new obstacle.
+        agent = payload()["agent"]
+        agent["env_vars"] = {}
+        agent["launch"] = dict(agent["launch"],
+                               policy_env=dict(agent["launch"]["policy_env"],
+                                               BUZZ_AGENT_PROVIDER="openrouter"))
+        assert provider.build_env(agent, payload()["provider_config"])
+
+    def test_another_harness_is_not_second_guessed(self):
+        # Only buzz-agent has this requirement. A future harness must not be
+        # held to it.
+        agent = payload()["agent"]
+        agent["env_vars"] = {}
+        agent["launch"] = dict(agent["launch"], command="some-other-acp")
+        agent["agent_command"] = "some-other-acp"
+        try:
+            provider.build_env(agent, payload()["provider_config"])
+        except provider.DeployRefused as error:
+            assert "BUZZ_AGENT_PROVIDER" not in str(error)
