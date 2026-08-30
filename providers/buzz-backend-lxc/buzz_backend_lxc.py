@@ -212,7 +212,8 @@ def build_env(agent, config):
     """The agent's environment, in the precedence the contract requires.
 
     Order, weakest to strongest: user env_vars, then the desktop-resolved
-    policy_env, then identity. Identity is last because nothing may override it.
+    launch.env (per-runtime model/provider injection), then launch.policy_env,
+    then identity. Identity is last because nothing may override it.
     """
     given = (config.get("slug") or "").strip()
     slug = validate_slug(given) if given else slug_from_name(agent.get("name"))
@@ -241,6 +242,16 @@ def build_env(agent, config):
     # keys are dropped here, not overwritten later, so a smuggled key cannot
     # survive into the file at all.
     for key, value in (agent.get("env_vars") or {}).items():
+        if key in RESERVED_KEYS:
+            continue
+        env[key] = value
+
+    # The descriptor's layered env (docs/remote-agents.md §Launch data, tier
+    # 2): per-runtime model/provider injection — BUZZ_AGENT_PROVIDER /
+    # BUZZ_AGENT_MODEL for buzz-agent — lives here, resolved by the desktop's
+    # harness descriptor. Without this, the operator's provider/model choice
+    # in the UI never reaches the deployed unit at all.
+    for key, value in (launch.get("env") or {}).items():
         if key in RESERVED_KEYS:
             continue
         env[key] = value

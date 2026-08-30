@@ -526,6 +526,33 @@ class TestNormativeMapping:
         assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"
         assert env["OPENROUTER_MODEL"] == "z-ai/glm-5.3"
 
+    def test_launch_env_materializes_the_desktop_resolved_provider_and_model(self):
+        # docs/remote-agents.md §Launch data: "launch.env is that descriptor's
+        # layered env, which is where per-runtime model/provider injection
+        # lives (... BUZZ_AGENT_MODEL/BUZZ_AGENT_PROVIDER for buzz-agent)."
+        # `build_launch_block` (desktop/src-tauri/src/commands/agents_deploy.rs)
+        # puts the resolved descriptor env verbatim into `launch.env` — this is
+        # what a real deploy sends when the operator just picks a provider and
+        # model in the UI, no env_vars workaround needed.
+        agent = payload()["agent"]
+        agent["env_vars"] = {}
+        agent["launch"] = dict(agent["launch"], env={
+            "BUZZ_AGENT_PROVIDER": "openrouter",
+            "BUZZ_AGENT_MODEL": "z-ai/glm-5.3",
+        })
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_AGENT_PROVIDER"] == "openrouter"
+        assert env["BUZZ_AGENT_MODEL"] == "z-ai/glm-5.3"
+
+    def test_policy_env_still_wins_over_launch_env_on_conflict(self):
+        # Non-regression: adding launch.env must not demote policy_env — the
+        # reserved BUZZ_ACP_AGENTS effective-parallelism value must still be
+        # the one that lands, not a value launch.env happens to carry.
+        agent = payload()["agent"]
+        agent["launch"] = dict(agent["launch"], env={"BUZZ_ACP_AGENTS": "99"})
+        env = provider.build_env(agent, payload()["provider_config"])
+        assert env["BUZZ_ACP_AGENTS"] == "2"
+
 
 class TestProviderPreflight:
     """A deploy that cannot possibly work should fail on the screen, not later.
@@ -581,3 +608,4 @@ class TestProviderPreflight:
             provider.build_env(agent, payload()["provider_config"])
         except provider.DeployRefused as error:
             assert "BUZZ_AGENT_PROVIDER" not in str(error)
+
